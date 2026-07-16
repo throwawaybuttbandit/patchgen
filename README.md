@@ -1,6 +1,9 @@
 # patchgen
 
 generates a .patch file that fixes broken ea25 mods.
+### here is the [web ui](https://patchgen.ftp.sh), if you don't want to do all of the steps below.
+mirror: https://rfpatcher.pages.dev/
+
 
 ## install and use
 
