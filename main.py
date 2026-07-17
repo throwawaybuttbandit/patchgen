@@ -22,7 +22,7 @@ def _count_curves(patchdata):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        prog="patchgen",
+        prog="chisel",
         description="patchfile generation for <=ea25 rfcs")
     ap.add_argument("rfc", nargs="+", help="rfcs")
     ap.add_argument("-o", "--output", help="output path (opt)")
