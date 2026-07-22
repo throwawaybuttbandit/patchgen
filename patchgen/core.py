@@ -122,12 +122,29 @@ def euler_to_quat_zyx(x_deg, y_deg, z_deg):
     qz = (0.0, 0.0, math.sin(hz), math.cos(hz))
     return _quat_mul(qz, _quat_mul(qy, qx))
 
+# fix sampling problem attempt #2
+def _sample_at(samples, t):
+    if t <= samples[0][0]:
+        return samples[0][1]
+    if t >= samples[-1][0]:
+        return samples[-1][1]
+    for k in range(len(samples) - 1):
+        t0, v0 = samples[k]
+        t1, v1 = samples[k + 1]
+        if t <= t1:
+            r = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            return v0 + (v1 - v0) * r
+    return samples[-1][1]
+
 
 def _rotation_curves(path, euler_x, euler_y, euler_z):
-    times = [t for t, _ in euler_x]
+    times = sorted({t for s in (euler_x, euler_y, euler_z) for t, _ in s})
     components = ([], [], [], [])  # x, y, z, w
     prev = None
-    for (_, ex), (_, ey), (_, ez) in zip(euler_x, euler_y, euler_z):
+    for t in times:
+        ex = _sample_at(euler_x, t)
+        ey = _sample_at(euler_y, t)
+        ez = _sample_at(euler_z, t)
         q = euler_to_quat_zyx(ex, ey, ez)
         if prev is not None and sum(a * b for a, b in zip(q, prev)) < 0:
             q = tuple(-c for c in q)
@@ -142,37 +159,64 @@ def _rotation_curves(path, euler_x, euler_y, euler_z):
     ]
 
 
-# given a streamedclip, yield time, rawdat
 def _parse_streamed(u32):
-    frames = []
+    per = {}
+    clamp = {}
     pos, n = 0, len(u32)
     while pos < n:
         time = _u32_to_f32(u32[pos])
         count = u32[pos + 1]
         pos += 2
-        keys = []
+        real = abs(time) < FLT_MAX and math.isfinite(time)
         for _ in range(count):
             idx = u32[pos]
-            value = _u32_to_f32(u32[pos + 4])  # coeff[3]
+            coeffs = (
+                _u32_to_f32(u32[pos + 1]),
+                _u32_to_f32(u32[pos + 2]),
+                _u32_to_f32(u32[pos + 3]),
+                _u32_to_f32(u32[pos + 4]),
+            )
             pos += 5
-            keys.append((idx, value))
-        frames.append((time, keys))
-    return frames
+            if real:
+                per.setdefault(idx, []).append((time, coeffs))
+            else:
+                clamp.setdefault(idx, coeffs[3])
+    for segs in per.values():
+        segs.sort()
+    return per, clamp
+
+
+def _resample_segments(segs, rate):
+    out = []
+    for k in range(len(segs) - 1):
+        t0, c0 = segs[k]
+        t1 = segs[k + 1][0]
+        out.append((t0, c0[3]))
+        moving = abs(c0[0]) > 1e-9 or abs(c0[1]) > 1e-9 or abs(c0[2]) > 1e-9
+        steps = int(round((t1 - t0) * rate)) if moving and rate > 0 else 0
+        for s in range(1, steps):
+            dt = (t1 - t0) * s / steps
+            out.append((t0 + dt, ((c0[0] * dt + c0[1]) * dt + c0[2]) * dt + c0[3]))
+    out.append((segs[-1][0], segs[-1][1][3]))
+    return out
 
 
 def _decode_scalar_curves(clipd, start_time, stop_time, fallback_rate):
     scalars = {}
 
-    # sprase keyframes 
+    dense = clipd["m_DenseClip"]
+    dense_rate = dense["m_SampleRate"]
+
     streamed = clipd["m_StreamedClip"]
     stream_count = streamed["curveCount"]
-    for time, keys in _parse_streamed(streamed["data"]):
-        if abs(time) >= FLT_MAX or not math.isfinite(time):
-            continue
-        for idx, value in keys:
-            scalars.setdefault(idx, []).append((time, value))
+    per, clamp = _parse_streamed(streamed["data"])
+    srate = dense_rate if dense_rate > 0 else fallback_rate
+    for idx, segs in per.items():
+        scalars[idx] = _resample_segments(segs, srate)
+    for idx, val in clamp.items():
+        if idx not in scalars:
+            scalars[idx] = [(start_time, val), (stop_time, val)]
 
-    dense = clipd["m_DenseClip"]
     dense_count = dense["m_CurveCount"]
     frame_count = dense["m_FrameCount"]
     rate = dense["m_SampleRate"]
@@ -210,15 +254,15 @@ def decode_clip(tt, tos):
         # cant resolve it, alright fall back to the games path + hash thing
         path = tos.get(b["path"], "path_%d" % b["path"])
         group = [scalars.get(3 * g + k, []) for k in range(3)]
-        if not group[0]:
+        if not any(group):
             continue
 
         attr = b["attribute"]
         if attr in VECTOR3_AXES:
             prefix = VECTOR3_AXES[attr]
             curves += [_curve(path, f"{prefix}.{ax}", samples)
-                       for ax, samples in zip("xyz", group)]
-        elif attr == ATTR_ROTATION:
+                       for ax, samples in zip("xyz", group) if samples]
+        elif attr == ATTR_ROTATION and all(group):
             curves += _rotation_curves(path, *group)
 
     meta = {

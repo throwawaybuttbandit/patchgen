@@ -35,9 +35,17 @@ def _encode_curve(curve):
         "values": values,
     }
 
+def _excluded(path, patterns):
+    for p in patterns:
+        if path == p or path.startswith(p + "/"):
+            return True
+    return False
+
+
 # decode every clip by an AnimatorController into raw patchdata
-def build_patchdata(env, log=_noop):
+def build_patchdata(env, log=_noop, exclude=None):
     tos = build_tos(env)
+    exclude = exclude or []
 
     # path_id -> (meta, curve_raw)
     clip_cache = {}
@@ -66,6 +74,9 @@ def build_patchdata(env, log=_noop):
 
             meta, curves = clip_cache[pid]
 
+            if exclude:
+                curves = [c for c in curves if not _excluded(c["relativePath"], exclude)]
+
             encoded = [_encode_curve(c) for c in curves]
 
             patched.append({
@@ -89,20 +100,20 @@ def patchdata_to_json(patchdata):
     return json.dumps(patchdata, separators=(",", ":"), ensure_ascii=False)
 
 # returns compressed patched bytes and patchdata dict
-def generate_patch_bytes(rfc_path, log=_noop):
+def generate_patch_bytes(rfc_path, log=_noop, exclude=None):
     env = UnityPy.load(rfc_path)
-    patchdata = build_patchdata(env, log=log)
+    patchdata = build_patchdata(env, log=log, exclude=exclude)
     if not patchdata["animationDatabase"]["patchedAnimations"]:
         # theres nothing for me to patch, or something went wrong idk
         raise ValueError("cant find patchable anims")
     payload = patchdata_to_json(patchdata).encode("utf-8")
     return lzf.compress(payload), patchdata
 
-def generate_patch_file(rfc_path, out_path=None, log=_noop):
+def generate_patch_file(rfc_path, out_path=None, log=_noop, exclude=None):
     if out_path is None:
         out_path = rfc_path + ".patch"
 
-    data, patchdata = generate_patch_bytes(rfc_path, log=log)
+    data, patchdata = generate_patch_bytes(rfc_path, log=log, exclude=exclude)
 
     with open(out_path, "wb") as f:
         f.write(data)

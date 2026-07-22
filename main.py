@@ -27,6 +27,8 @@ def main(argv=None):
     ap.add_argument("rfc", nargs="+", help="rfcs")
     ap.add_argument("-o", "--output", help="output path (opt)")
     ap.add_argument("-q", "--quiet", action="store_true", help="only print results")
+    ap.add_argument("-x", "--exclude", nargs="+", metavar="BONE",
+                    help="skip curves under these bone paths (let native anim drive them)")
     args = ap.parse_args(argv)
 
     inputs = _expand(args.rfc)
@@ -44,7 +46,7 @@ def main(argv=None):
             continue
         print(f"* patching {rfc}")
         try:
-            out_path, patchdata = generate_patch_file(rfc, args.output, log=log)
+            out_path, patchdata = generate_patch_file(rfc, args.output, log=log, exclude=args.exclude)
         except Exception as e:
             print(f"** err: {e}", file=sys.stderr)
             rc = 1
